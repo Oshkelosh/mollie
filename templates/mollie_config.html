@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field with context %}
+
+{% block title %}Mollie Settings{% endblock %}
+
+{% block content %}
+<h1>Mollie Payments</h1>
+
+<div class="card">
+    <h2>Configuration</h2>
+    <form method="post" action="/admin/payments/mollie/save" class="form">
+        {{ csrf_field() }}
+        <div class="form-group">
+            <label for="api_key">API Key</label>
+            <input type="password" id="api_key" name="api_key"
+                   value="{{ config.get('api_key', '') }}" />
+        </div>
+        <div class="form-group">
+            <label for="webhook_secret">Webhook Secret</label>
+            <input type="password" id="webhook_secret" name="webhook_secret"
+                   value="{{ config.get('webhook_secret', '') }}" />
+        </div>
+        <div class="alert alert--info" style="margin-bottom:1em;">
+            Checkout redirects use your <a href="/admin/settings">Site URL</a> automatically.
+            Clear the override field below to use automatic URLs.
+        </div>
+        <details style="margin-bottom:1em;">
+            <summary>Advanced redirect URL override</summary>
+            <div class="form-group" style="margin-top:1em;">
+                <label for="redirect_url">Redirect URL override</label>
+                <input type="text" id="redirect_url" name="redirect_url"
+                       value="{{ config.get('redirect_url', '') }}"
+                       placeholder="Leave blank for automatic URL" />
+            </div>
+        </details>
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="is_enabled" {% if addon and addon.is_enabled %}checked{% endif %} />
+                Enable this payment processor
+            </label>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn--primary">Save Configuration</button>
+        </div>
+    </form>
+</div>
+
+<div class="card" style="margin-top:1.5em;">
+    <h2>Webhook Endpoint</h2>
+    <code>{{ request.base_url }}api/v1/payments/mollie/webhook</code>
+</div>
+{% endblock %}
