@@ -6,14 +6,15 @@ Supports checkout payments, refunds, and webhooks.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
+from urllib.parse import parse_qs
 
 import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, SecretStr
 
 from app.addons.payments.base import PaymentAddon
-from app.addons.payments.helpers import effective_redirect_url, extract_order_id, mock_checkout
+from app.addons.payments.helpers import create_payment_error, effective_redirect_url, extract_order_id, mock_checkout
 from schemas.payment import PaymentWebhookOutcome
 from app.addons.log import info, warning
 from app.addons.config_serialization import dump_addon_config
@@ -145,7 +146,7 @@ class MollieAddon(PaymentAddon):
             }
         except Exception as exc:
             warning("Mollie", "create_payment error: {}", exc)
-            return mock_checkout("mollie", order_id, amount, currency)
+            return create_payment_error("mollie", exc, order_id)
 
     async def confirm_payment(self, payment_id: str) -> Dict[str, Any]:
         status = await self.get_payment_status(payment_id)
@@ -162,8 +163,14 @@ class MollieAddon(PaymentAddon):
         if not self._api_key:
             return {"success": False, "error": "Mollie API key not configured"}
 
-        body = {"amount": {"currency": "EUR", "value": f"{amount / 100:.2f}"}}
         try:
+            # Refund in the payment's own currency; hardcoding EUR fails (or
+            # mis-refunds) any non-EUR payment.
+            payment = await self._request("GET", f"/payments/{payment_id}")
+            currency = str(
+                (payment.get("amount") or {}).get("currency") or "EUR"
+            ).upper()
+            body = {"amount": {"currency": currency, "value": f"{amount / 100:.2f}"}}
             data = await self._request(
                 "POST",
                 f"/payments/{payment_id}/refunds",
@@ -195,6 +202,40 @@ class MollieAddon(PaymentAddon):
         except Exception as exc:
             warning("Mollie", "get_payment_status({}) error: {}", payment_id, exc)
             return {"payment_id": payment_id, "status": "error", "detail": str(exc)}
+
+    def _webhook_payment_id(self, body: bytes) -> str:
+        """Extract the Mollie payment id from a form- or JSON-encoded webhook body."""
+        text = body.decode("utf-8", errors="ignore").strip()
+        if text.startswith("{"):
+            import json
+
+            try:
+                data = json.loads(text)
+            except ValueError:
+                return ""
+            resource = data.get("resource", data)
+            return str(resource.get("id", data.get("id", "")))
+        parsed = parse_qs(text)
+        values = parsed.get("id")
+        return values[0] if values else ""
+
+    async def verify_webhook(
+        self,
+        *,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> bool:
+        """Mollie webhooks are unsigned: confirm by re-fetching the payment.
+
+        The webhook body only carries a payment id; the authoritative status comes
+        from the Mollie API using our own key, so a forged id fails the paid check.
+        """
+        del headers
+        payment_id = self._webhook_payment_id(body)
+        if not payment_id:
+            return False
+        status = await self.get_payment_status(payment_id)
+        return str(status.get("status", "")).strip().lower() == "paid"
 
     async def parse_webhook(
         self, payload: Dict[str, Any], signature: str
